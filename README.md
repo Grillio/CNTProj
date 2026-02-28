@@ -30,13 +30,6 @@ Start all peers from `PeerInfo.txt` (Windows):
 .\RunAllLocalNodes.bat
 ```
 
-## Run (`ServerClient.py`, optional)
-`ServerClient.py` is independent and currently accepts `--peerinfo` (not `--commonconfig`).
-
-```powershell
-python .\ServerClient.py --ip 127.0.0.1 --port 6001 --id 1001 --peerinfo .\PeerInfo.txt
-```
-
 ## Notes
 - Start peers in the same order as `PeerInfo.txt` when launching manually.
 - Peers with `hasFile=1` should already have `thefile` in the project folder.
