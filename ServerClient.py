@@ -392,14 +392,13 @@ def main() -> None:
     if idx is None or my_entry is None:
         raise SystemExit(f"Process id {args.id} not found in peerinfo file")
 
-    # Optional: ensure args ip/port match the config; you can relax this if you want.
     if my_entry.ip != args.ip or my_entry.port != args.port:
         print(
             f"[warn] peerinfo says this node is {my_entry.ip}:{my_entry.port} "
             f"but args are {args.ip}:{args.port}"
         )
 
-    prior_peers = all_entries[:idx]  # all processes made before it
+    prior_peers = all_entries[:idx]
 
     node = Node(
         my_id=args.id,
@@ -411,10 +410,8 @@ def main() -> None:
     node.start_server()
 
     try:
-        # Block until all required prior-peer connections are established, then prints "done"
         node.connect_to_prior_peers_blocking()
 
-        # Keep running to accept later nodes and receive packets
         while True:
             time.sleep(1.0)
     except KeyboardInterrupt:

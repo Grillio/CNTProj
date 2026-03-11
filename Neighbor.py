@@ -18,7 +18,6 @@ HANDSHAKE_LEN = 32
 #   N bytes: body, where N = (message_length - 1)
 FRAME_LEN_PREFIX = 4
 
-# Message types we care about
 MSG_CHOKE = 0
 MSG_UNCHOKE = 1
 MSG_INTERESTED = 2
@@ -26,7 +25,6 @@ MSG_NOT_INTERESTED = 3
 MSG_HAVE = 4          # body: 4 bytes (your bitfield per your latest instruction)
 MSG_BITFIELD = 5      # body: 4 bytes (your bitfield per your latest instruction)
 
-# Your existing “download size” stat message
 MSG_PIECE = 7
 
 
@@ -84,7 +82,6 @@ class Neighbor:
 
         self.peer_id: Optional[int] = None
 
-        # Public fields
         self.downloadsize: int = 0
         self.interested: bool = False
         self.bitfield: bytes = b"\x00\x00\x00\x00"  # neighbor's latest bitfield (4 bytes)
@@ -96,7 +93,7 @@ class Neighbor:
         )
 
     # -----------------------------
-    # Interest logic (you asked these to exist)
+    # Interest logic
     # -----------------------------
 
     def get_requestindex(self, their_bitfield: bytes) -> int:
@@ -203,14 +200,11 @@ class Neighbor:
         if len(body) != 4:
             return
 
-        self.bitfield = body  # ✅ store it as this neighbor's latest bitfield
+        self.bitfield = body
 
         if self.checkifinterested(body):
             # If we're interested, notify them
             self.send_interested()
-
-        # Optional: you mentioned get_requestindex exists; not used yet.
-        # _idx = self.get_requestindex(body)
 
     def _rx_loop(self) -> None:
         try:
@@ -227,7 +221,6 @@ class Neighbor:
                 body_len = msg_len - 1
                 body = _recv_exact(self.sock, body_len) if body_len > 0 else b""
 
-                # ✅ Your new rules
                 if msg_type in (MSG_HAVE, MSG_BITFIELD) and body_len == 4:
                     self._handle_bitfield_like(msg_type, body)
 
@@ -237,7 +230,6 @@ class Neighbor:
                 elif msg_type == MSG_NOT_INTERESTED:
                     self.interested = False
 
-                # Your prior rule
                 if msg_type == MSG_PIECE:
                     self.downloadsize = msg_len
 
