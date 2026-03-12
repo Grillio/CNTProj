@@ -2,15 +2,6 @@
 """
 Python 3.14+ single-file TCP P2P node (server + client) with 32-byte handshake.
 
-What changed vs previous version:
-- Reads a *peerinfo* config file, finds THIS node's entry (by --id),
-  then connects ONLY to entries that appear *before* it in the file.
-- Stores outbound+inbound established connections in:
-      Node.neighbors : dict[int, socket.socket]
-  where key = peer process id, value = the TCP socket.
-- After dialing all prior peers (best-effort with retry), prints "done"
-  once all required connections are established (or exits if impossible).
-
 Config file format (peerinfo):
 - Order matters (top to bottom).
 - Blank lines and lines starting with # are ignored.
