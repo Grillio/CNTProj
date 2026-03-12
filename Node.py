@@ -13,26 +13,24 @@ from typing import Dict, List, Optional, Set, Tuple
 from Neighbor import Neighbor
 
 
-# -----------------------------
-# Config structs + parsing
-# -----------------------------
+#Config structs + parsing
 
 @dataclass(frozen=True)
 class PeerEntry:
     pid: int
     ip: str
     port: int
-    has_file: bool  # 0/1 in PeerInfo.txt
+    has_file: bool  #0/1 in PeerInfo.txt
 
 
 @dataclass(frozen=True)
 class CommonConfig:
-    # peer-selection config
+    #peer-selection config
     number_of_preferred_neighbors: int
     unchoking_interval: int
     optimistic_unchoking_interval: int
 
-    # file config
+    #file config
     file_name: str
     file_size: int
     piece_size: int
@@ -125,18 +123,14 @@ def load_common_config(path: str) -> CommonConfig:
     )
 
 
-# -----------------------------
-# Choke state (local tracking)
-# -----------------------------
+#Choke state (local tracking)
 
 class ChokeState(str, Enum):
     CHOKED = "choked"
     UNCHOKED = "unchoked"
 
 
-# -----------------------------
-# Node
-# -----------------------------
+#Node
 
 class Node:
     def __init__(
@@ -156,7 +150,7 @@ class Node:
         self.all_peers = all_peers
         self.peerinfo_path = peerinfo_path
 
-        # Common config
+        #Common config
         self.common = common
         self.NumberOfPreferredNeighbors = common.number_of_preferred_neighbors
         self.UnchokingInterval = common.unchoking_interval
@@ -165,20 +159,20 @@ class Node:
         self.PieceSize = common.piece_size
         self.FileName = common.file_name
 
-        # Determine whether THIS node starts with the file (from PeerInfo.txt)
+        #Determine whether this node starts with the file (from PeerInfo.txt)
         me = next((p for p in all_peers if p.pid == my_id), None)
         if me is None:
             raise ValueError(f"my_id {my_id} not found in peer list")
         self.has_file_initially = me.has_file
 
-        # REQUIRED: neighbors dict indexed by peer process id -> tcp socket
+        #neighbors dict indexed by peer process id -> tcp socket
         self.neighbors: Dict[int, socket.socket] = {}
 
-        # Neighbor objects (for downloadsize/interested/reset_preferences)
+        #Neighbor objects (for downloadsize/interested/reset_preferences)
         self._neighbor_objs: Dict[int, Neighbor] = {}
         self._neighbors_lock = threading.Lock()
 
-        # Local choke state per peer_id
+        #Local choke state per peer_id
         self.choke_state: Dict[int, ChokeState] = {}
 
         self._server_sock: Optional[socket.socket] = None
@@ -187,18 +181,16 @@ class Node:
         self.connect_timeout_s = connect_timeout_s
         self.retry_interval_s = retry_interval_s
 
-        # Start gate
+        #Start gate
         self._started = False
 
-        # All peer IDs except self (required connections)
+        #All peer IDs except self (required connections)
         self.required_peer_ids: Set[int] = {p.pid for p in self.all_peers if p.pid != self.my_id}
 
-        # Map pid -> PeerEntry for dialing
+        #Map pid -> PeerEntry for dialing
         self._peer_by_id: Dict[int, PeerEntry] = {p.pid: p for p in self.all_peers}
 
-        # -----------------------------
-        # PiecesIHave bitfield (4 bytes)
-        # -----------------------------
+        #PiecesIHave bitfield (4 bytes)
         self.PiecesIHave: bytes = b"\xFF\xFF\xFF\xFF" if self.has_file_initially else b"\x00\x00\x00\x00"
 
         # If hasFile==1: load the file into memory
@@ -206,17 +198,15 @@ class Node:
         if self.has_file_initially:
             self._load_file_into_memory()
 
-        # -----------------------------
-        # Neighbor selection state
-        # -----------------------------
+        #Neighbor selection state
         self.preferredneighbors: List[int] = []          # peer_ids
         self.optimisticneighbor: Optional[int] = None    # peer_id
 
-        # Timer threads start only after Start()
+        #Timer threads start only after Start()
         self._preferred_clock_thread: Optional[threading.Thread] = None
         self._optimistic_clock_thread: Optional[threading.Thread] = None
 
-    # ---------------- Lifecycle ----------------
+    #Lifecycle
 
     def start(self) -> None:
         self._start_server()
@@ -238,7 +228,7 @@ class Node:
         for n in objs:
             n.close()
 
-    # ---------------- File handling ----------------
+    #File handling
 
     def _load_file_into_memory(self) -> None:
         if not self.FileName:
@@ -256,7 +246,7 @@ class Node:
         self.file_bytes = data
         print(f"[Node {self.my_id}] Loaded file into memory: '{self.FileName}' ({len(data)} bytes)")
 
-    # ---------------- Server ----------------
+    #Server
 
     def _start_server(self) -> None:
         s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -299,7 +289,7 @@ class Node:
             print(f"[Node {self.my_id}] Inbound handshake failed from {addr}: {e}")
             neighbor.close()
 
-    # ---------------- Dialing logic ----------------
+    #Dialing logic
 
     def _dial_missing_peers_forever(self) -> None:
         for pid in self.required_peer_ids:
@@ -346,7 +336,7 @@ class Node:
                         pass
                 time.sleep(self.retry_interval_s)
 
-    # ---------------- Start gate ----------------
+    #Start gate
 
     def _all_required_connected(self) -> bool:
         with self._neighbors_lock:
@@ -371,12 +361,12 @@ class Node:
 
         print("all connections have been successfully established")
 
-        # On start: choose random optimistic + preferred (initial state)
+        #On start: choose random optimistic + preferred (initial state)
         self._initialize_random_unchokes()
 
         self.Start()
 
-        # Start interval logic only after process begins
+        #Start interval logic only after process begins
         self._preferred_clock_thread = threading.Thread(
             target=self._preferred_interval_loop, name="PreferredIntervalLoop", daemon=True
         )
@@ -389,7 +379,7 @@ class Node:
     def Start(self) -> None:
         print("Start triggered")
 
-    # ---------------- Neighbor registration ----------------
+    #Neighbor registration
 
     def _register_neighbor(self, peer_id: int, neighbor: Neighbor) -> None:
         if peer_id == self.my_id:
@@ -403,13 +393,11 @@ class Node:
 
             self.neighbors[peer_id] = neighbor.sock
             self._neighbor_objs[peer_id] = neighbor
-            self.choke_state[peer_id] = ChokeState.CHOKED  # default choked until selected
+            self.choke_state[peer_id] = ChokeState.CHOKED  #default choked until selected
 
-    # ---------------- Selection logic ----------------
+    #Selection logic
 
-    # -----------------------------
-    # Interest / Request helpers (new)
-    # -----------------------------
+    #Interest / Request helpers (new)
 
     def request(self, peer_id: int) -> None:
         """
@@ -449,10 +437,10 @@ class Node:
 
         random.shuffle(ids)
 
-        # optimistic: any one random
+        #optimistic: any one random
         self.optimisticneighbor = ids[0]
 
-        # preferred: random K excluding optimistic
+        #preferred: random K excluding optimistic
         remaining = [pid for pid in ids if pid != self.optimisticneighbor]
         k = max(0, self.NumberOfPreferredNeighbors)
         self.preferredneighbors = remaining[:k] if k > 0 else []
@@ -506,13 +494,13 @@ class Node:
             print(f"[Node {self.my_id}] Preferred update: no interested peers -> preferred=[]")
             return
 
-        # Sort by downloadsize desc
+        #Sort by downloadsize desc
         candidates.sort(key=lambda t: t[1], reverse=True)
 
         chosen: List[int] = []
         i = 0
         while i < len(candidates) and len(chosen) < k:
-            # collect tie group at this score
+            #collect tie group at this score
             score = candidates[i][1]
             tie_group: List[int] = []
             while i < len(candidates) and candidates[i][1] == score:
@@ -523,17 +511,17 @@ class Node:
             if len(tie_group) <= slots_left:
                 chosen.extend(tie_group)
             else:
-                # tie spillover: choose randomly among tied to fill remaining slots
+                #tie spillover: choose randomly among tied to fill remaining slots
                 random.shuffle(tie_group)
                 chosen.extend(tie_group[:slots_left])
 
-        # If still not full, fill randomly from remaining interested (shouldn't happen with loop above, but safe)
+        #If still not full, fill randomly from remaining interested (shouldn't happen with loop above, but safe)
         if len(chosen) < k:
             remaining = [pid for pid, _sz in candidates if pid not in chosen]
             random.shuffle(remaining)
             chosen.extend(remaining[: (k - len(chosen))])
 
-        # Exclude optimistic from preferred (standard)
+        #Exclude optimistic from preferred (standard)
         if self.optimisticneighbor is not None and self.optimisticneighbor in chosen:
             chosen = [pid for pid in chosen if pid != self.optimisticneighbor]
             if len(chosen) < k:
@@ -594,10 +582,10 @@ class Node:
             for n in self._neighbor_objs.values():
                 n.reset_preferences()
 
-    # ---------------- Callbacks from Neighbor ----------------
+    #Callbacks from Neighbor
 
     def on_packet(self, neighbor: Neighbor, payload: bytes) -> None:
-        # Neighbor sends raw payload as: [type][body...]
+        #Neighbor sends raw payload as: [type][body...]
         msg_type = payload[0] if payload else None
         print(f"[Node {self.my_id}] RX from peer_id={neighbor.peer_id} type={msg_type} bytes={len(payload)}")
 

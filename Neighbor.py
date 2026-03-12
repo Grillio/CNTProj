@@ -6,24 +6,24 @@ import threading
 from typing import Optional, Tuple, TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from Node import Node  # noqa: F401
+    from Node import Node  #noqa: F401
 
 
-HANDSHAKE_HEADER = b"P2PFILESHARINGPROJ"  # 18 bytes
+HANDSHAKE_HEADER = b"P2PFILESHARINGPROJ"  #18 bytes
 HANDSHAKE_LEN = 32
 
-# Framing (your current rule):
-#   4 bytes: message length (big-endian uint32) -> counts type(1) + body(N)
-#   1 byte : message type
-#   N bytes: body, where N = (message_length - 1)
+#Framing:
+#4 bytes: message length (big-endian uint32) -> counts type(1) + body(N)
+#1 byte: message type
+#N bytes: body, where N = (message_length - 1)
 FRAME_LEN_PREFIX = 4
 
 MSG_CHOKE = 0
 MSG_UNCHOKE = 1
 MSG_INTERESTED = 2
 MSG_NOT_INTERESTED = 3
-MSG_HAVE = 4          # body: 4 bytes (your bitfield per your latest instruction)
-MSG_BITFIELD = 5      # body: 4 bytes (your bitfield per your latest instruction)
+MSG_HAVE = 4 #body: 4 bytes
+MSG_BITFIELD = 5 #body: 4 bytes
 
 MSG_PIECE = 7
 
@@ -84,7 +84,7 @@ class Neighbor:
 
         self.downloadsize: int = 0
         self.interested: bool = False
-        self.bitfield: bytes = b"\x00\x00\x00\x00"  # neighbor's latest bitfield (4 bytes)
+        self.bitfield: bytes = b"\x00\x00\x00\x00"  #neighbor's latest bitfield (4 bytes)
 
         self._send_lock = threading.Lock()
         self._stop_evt = threading.Event()
@@ -92,9 +92,7 @@ class Neighbor:
             target=self._rx_loop, name=f"NeighborRX-{addr[0]}:{addr[1]}", daemon=True
         )
 
-    # -----------------------------
-    # Interest logic
-    # -----------------------------
+    #Interest logic
 
     def get_requestindex(self, their_bitfield: bytes) -> int:
         """
@@ -119,9 +117,7 @@ class Neighbor:
         their_bits = int.from_bytes(their_bitfield, "big", signed=False)
         return (their_bits & (~my_bits & 0xFFFFFFFF)) != 0
 
-    # -----------------------------
-    # Public API
-    # -----------------------------
+    #Public API
 
     def reset_preferences(self) -> None:
         self.downloadsize = 0
@@ -177,15 +173,13 @@ class Neighbor:
         self._send_raw(frame)
 
     def send_interested(self) -> None:
-        # “message of size 0 and type 2” in your framing means: body_len=0, so msg_len=1
+        #“message of size 0 and type 2” in framing means: body_len=0, so msg_len=1
         self.send_packet(MSG_INTERESTED, b"")
 
     def send_not_interested(self) -> None:
         self.send_packet(MSG_NOT_INTERESTED, b"")
 
-    # -----------------------------
-    # Internal helpers
-    # -----------------------------
+    #Internal helpers
 
     def _send_raw(self, b: bytes) -> None:
         with self._send_lock:
@@ -203,13 +197,13 @@ class Neighbor:
         self.bitfield = body
 
         if self.checkifinterested(body):
-            # If we're interested, notify them
+            #If we're interested, notify them
             self.send_interested()
 
     def _rx_loop(self) -> None:
         try:
             while not self._stop_evt.is_set():
-                # length includes type byte
+                #length includes type byte
                 length_b = _recv_exact(self.sock, FRAME_LEN_PREFIX)
                 (msg_len,) = struct.unpack("!I", length_b)
                 if msg_len < 1:
@@ -233,7 +227,7 @@ class Neighbor:
                 if msg_type == MSG_PIECE:
                     self.downloadsize = msg_len
 
-                # Forward to node (keep existing signature)
+                #Forward to node (keep existing signature)
                 self.node.on_packet(self, msg_type_b + body)
 
         except Exception as e:

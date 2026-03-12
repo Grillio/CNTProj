@@ -32,10 +32,10 @@ from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
 
-HANDSHAKE_HEADER = b"P2PFILESHARINGPROJ"  # 18 bytes
+HANDSHAKE_HEADER = b"P2PFILESHARINGPROJ"  #18 bytes
 HANDSHAKE_LEN = 32
 
-FRAME_LEN_PREFIX = 4  # uint32 BE length prefix for packets (optional usage)
+FRAME_LEN_PREFIX = 4  #uint32 BE length prefix for packets (optional usage)
 
 
 def _recv_exact(sock: socket.socket, n: int) -> bytes:
@@ -189,10 +189,10 @@ class Node:
         self.listen_port = listen_port
         self.prior_peers = prior_peers
 
-        # REQUIRED: neighbors dict indexed by peer process id -> tcp socket
+        #neighbors dict indexed by peer process id -> tcp socket
         self.neighbors: Dict[int, socket.socket] = {}
 
-        self._neighbor_nodes: Dict[int, NeighborNode] = {}  # internal convenience
+        self._neighbor_nodes: Dict[int, NeighborNode] = {}  #internal convenience
         self._neighbors_lock = threading.Lock()
 
         self._server_sock: Optional[socket.socket] = None
@@ -201,10 +201,10 @@ class Node:
         self.connect_timeout_s = connect_timeout_s
         self.retry_interval_s = retry_interval_s
 
-        # Used to print "done" only once
+        #Used to print "done" only once
         self._done_printed = False
 
-    # ---------------- Server ----------------
+    #Server
 
     def start_server(self) -> None:
         s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -247,7 +247,7 @@ class Node:
             print(f"[Node {self.my_id}] Inbound handshake failed from {addr}: {e}")
             nn.close()
 
-    # ---------------- Client (dial prior peers) ----------------
+    #Client (dial prior peers)
 
     def connect_to_prior_peers_blocking(self) -> None:
         """
@@ -261,11 +261,11 @@ class Node:
             self._done_printed = True
             return
 
-        # Start a dial thread per peer
+        #Start a dial thread per peer
         for p in self.prior_peers:
             threading.Thread(target=self._dial_peer_until_connected, args=(p,), daemon=True).start()
 
-        # Block until all required peers are connected (by pid)
+        #Block until all required peers are connected (by pid)
         while not self._stop_evt.is_set():
             with self._neighbors_lock:
                 missing = [pid for pid in required_ids if pid not in self.neighbors]
@@ -275,7 +275,7 @@ class Node:
             time.sleep(0.05)
 
     def _dial_peer_until_connected(self, peer: PeerEntry) -> None:
-        # Don't dial ourselves even if config is wrong
+        #Don't dial ourselves even if config is wrong
         if peer.pid == self.my_id:
             return
 
@@ -294,7 +294,7 @@ class Node:
                 nn = NeighborNode(self, sock, (peer.ip, peer.port), outbound=True)
                 peer_id_from_hs = nn.do_handshake()
 
-                # Safety: ensure handshake matches the config's pid
+                #Safety: ensure handshake matches the config's pid
                 if peer_id_from_hs != peer.pid:
                     raise ConnectionError(
                         f"Connected to {peer.ip}:{peer.port} but handshake id={peer_id_from_hs}, expected {peer.pid}"
@@ -314,7 +314,7 @@ class Node:
                         pass
                 time.sleep(self.retry_interval_s)
 
-    # ---------------- Shared neighbor management ----------------
+    #Shared neighbor management
 
     def _register_neighbor(self, peer_id: int, nn: NeighborNode) -> None:
         """
@@ -322,7 +322,7 @@ class Node:
           neighbors[peer_id] = tcp socket
         """
         with self._neighbors_lock:
-            # If already connected, keep the existing one and close the new.
+            #If already connected, keep the existing one and close the new.
             if peer_id in self.neighbors:
                 nn.close()
                 return
@@ -340,7 +340,7 @@ class Node:
             print("done")
             self._done_printed = True
 
-    # ---------------- Callbacks ----------------
+    #Callbacks
 
     def on_packet(self, neighbor: NeighborNode, payload: bytes) -> None:
         msg = payload.decode("utf-8", errors="replace")
@@ -352,7 +352,7 @@ class Node:
         if pid is None:
             return
         with self._neighbors_lock:
-            # Remove only if it still matches this socket object
+            #Remove only if it still matches this socket object
             cur_sock = self.neighbors.get(pid)
             if cur_sock is neighbor.sock:
                 self.neighbors.pop(pid, None)
@@ -381,7 +381,7 @@ def main() -> None:
 
     all_entries = load_peerinfo(args.peerinfo)
 
-    # Find where this id appears
+    #Find where this id appears
     idx = None
     my_entry: Optional[PeerEntry] = None
     for i, e in enumerate(all_entries):
