@@ -1,16 +1,4 @@
 #!/usr/bin/env python3
-"""
-Python 3.14+ single-file TCP P2P node (server + client) with 32-byte handshake.
-
-Config file format (peerinfo):
-- Order matters (top to bottom).
-- Blank lines and lines starting with # are ignored.
-- Each valid line must include:  id ip port
-  Examples:
-    1001 127.0.0.1 6000
-    1002 127.0.0.1 6001
-"""
-
 from __future__ import annotations
 
 import argparse
@@ -86,10 +74,6 @@ def load_peerinfo(path: str) -> List[PeerEntry]:
 
 
 class NeighborNode:
-    """
-    Wraps one TCP connection and does handshake + receive loop.
-    Calls Node.on_packet(...) on framed packets (length-prefixed).
-    """
 
     def __init__(self, node: "Node", sock: socket.socket, addr: Tuple[str, int], outbound: bool):
         self.node = node
@@ -103,11 +87,6 @@ class NeighborNode:
         self._rx_thread = threading.Thread(target=self._rx_loop, daemon=True)
 
     def do_handshake(self) -> int:
-        """
-        Exchange 32-byte handshake.
-        Outbound: send ours then read theirs
-        Inbound : read theirs then send ours
-        """
         self.sock.settimeout(10.0)
         if self.outbound:
             self._send_raw(build_handshake(self.node.my_id))
@@ -192,7 +171,6 @@ class Node:
         self.connect_timeout_s = connect_timeout_s
         self.retry_interval_s = retry_interval_s
 
-        #Used to print "done" only once
         self._done_printed = False
 
     #Server
@@ -241,11 +219,6 @@ class Node:
     #Client (dial prior peers)
 
     def connect_to_prior_peers_blocking(self) -> None:
-        """
-        Connect to every peer entry that appears before us in the peerinfo file.
-        This function blocks until all those connections are established.
-        When finished, prints "done".
-        """
         required_ids = [p.pid for p in self.prior_peers]
         if not required_ids:
             print("done")
@@ -308,10 +281,6 @@ class Node:
     #Shared neighbor management
 
     def _register_neighbor(self, peer_id: int, nn: NeighborNode) -> None:
-        """
-        Store required mapping:
-          neighbors[peer_id] = tcp socket
-        """
         with self._neighbors_lock:
             #If already connected, keep the existing one and close the new.
             if peer_id in self.neighbors:
@@ -343,7 +312,6 @@ class Node:
         if pid is None:
             return
         with self._neighbors_lock:
-            #Remove only if it still matches this socket object
             cur_sock = self.neighbors.get(pid)
             if cur_sock is neighbor.sock:
                 self.neighbors.pop(pid, None)

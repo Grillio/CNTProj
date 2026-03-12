@@ -37,10 +37,6 @@ class CommonConfig:
 
 
 def load_peerinfo(path: str) -> List[PeerEntry]:
-    """
-    PeerInfo.txt format:
-      <id> <ip> <port> <hasFile>
-    """
     p = Path(path)
     if not p.exists():
         raise FileNotFoundError(f"peerinfo file not found: {path}")
@@ -64,15 +60,6 @@ def load_peerinfo(path: str) -> List[PeerEntry]:
 
 
 def load_common_config(path: str) -> CommonConfig:
-    """
-    Common.txt format example:
-        NumberOfPreferredNeighbors 2
-        UnchokingInterval 5
-        OptimisticUnchokingInterval 15
-        FileName TheFile.dat
-        FileSize 10000232
-        PieceSize 32768
-    """
     p = Path(path)
     if not p.exists():
         raise FileNotFoundError(f"common config file not found: {path}")
@@ -400,20 +387,10 @@ class Node:
     #Interest / Request helpers (new)
 
     def request(self, peer_id: int) -> None:
-        """
-        Placeholder for request logic.
-        Right now: does nothing.
-        """
         _ = peer_id
         return
 
     def checkifinterested(self, their_bitfield: bytes) -> bool:
-        """
-        Return True if this node is missing at least one piece that the neighbor has.
-
-        Bit rule (32-bit):
-            interested if (their_bits & ~my_bits) != 0
-        """
         if not isinstance(their_bitfield, (bytes, bytearray)) or len(their_bitfield) != 4:
             return False
         if not isinstance(self.PiecesIHave, (bytes, bytearray)) or len(self.PiecesIHave) != 4:
@@ -464,15 +441,6 @@ class Node:
             self._recompute_optimistic_neighbor()
 
     def _recompute_preferred_neighbors(self) -> None:
-        """
-        Preferred interval:
-        - consider ONLY interested neighbors
-        - rank by downloadsize desc
-        - pick top K; if tie for last slot, choose randomly among tied
-        - if fewer than K interested, fill randomly from interested
-        - reset downloadsize (preferredreset) on all neighbors
-        - update choke_state
-        """
         k = max(0, self.NumberOfPreferredNeighbors)
         if k == 0:
             self.preferredneighbors = []
@@ -537,12 +505,6 @@ class Node:
         print(f"[Node {self.my_id}] Preferred update: preferred={self.preferredneighbors}")
 
     def _recompute_optimistic_neighbor(self) -> None:
-        """
-        Optimistic interval:
-        - choose random neighbor that is interested AND currently choked AND not preferred
-        - if none, fallback to any interested not-preferred
-        - update choke_state
-        """
         with self._neighbors_lock:
             choked_interested = []
             fallback = []
@@ -565,11 +527,6 @@ class Node:
         print(f"[Node {self.my_id}] Optimistic update: optimistic={self.optimisticneighbor}")
 
     def _apply_choke_states(self) -> None:
-        """
-        Local-side state:
-          UNCHOKED if preferred OR optimistic
-          CHOKED otherwise
-        """
         with self._neighbors_lock:
             for pid in self._neighbor_objs.keys():
                 if pid in self.preferredneighbors or (self.optimisticneighbor is not None and pid == self.optimisticneighbor):

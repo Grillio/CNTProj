@@ -59,21 +59,6 @@ def parse_handshake(hs: bytes) -> int:
 
 
 class Neighbor:
-    """
-    Wraps a single TCP connection to a neighbor.
-
-    New behavior requested:
-      - If we receive msg type 4 or 5 with body size 4:
-          * treat the 4 body bytes as this neighbor's bitfield
-          * call checkifinterested(bitfield) -> bool
-          * if True, send Interested: msg_len=1, type=2, body=""
-      - If we receive type 2: set self.interested = True
-      - If we receive type 3: set self.interested = False
-
-    Also keeps:
-      - self.downloadsize updated when msg_type == 7 (stores msg_len, per your prior request)
-    """
-
     def __init__(self, node: "Node", sock: socket.socket, addr: Tuple[str, int], outbound: bool):
         self.node = node
         self.sock = sock
@@ -95,22 +80,10 @@ class Neighbor:
     #Interest logic
 
     def get_requestindex(self, their_bitfield: bytes) -> int:
-        """
-        Placeholder: decide which piece index to request next given the neighbor's bitfield.
-        You can fill this in later.
-        """
         _ = their_bitfield
         return -1
 
     def checkifinterested(self, their_bitfield: bytes) -> bool:
-        """
-        Returns True if *we* are interested in the neighbor (they have something we don't).
-
-        Since your bitfields are 4 bytes (=32 bits), simplest check:
-          interested if (their_bits & ~my_bits) != 0
-
-        Uses node.PiecesIHave (4 bytes).
-        """
         if len(their_bitfield) != 4:
             return False
         my_bits = int.from_bytes(self.node.PiecesIHave, "big", signed=False)
@@ -123,10 +96,6 @@ class Neighbor:
         self.downloadsize = 0
 
     def do_handshake(self) -> int:
-        """
-        Outbound: send ours then read theirs
-        Inbound : read theirs then send ours
-        """
         self.sock.settimeout(10.0)
 
         if self.outbound:
@@ -158,11 +127,6 @@ class Neighbor:
             pass
 
     def send_packet(self, msg_type: int, body: bytes = b"") -> None:
-        """
-        Sends framed message:
-          msg_len = 1 + len(body)
-          [4-byte msg_len][1-byte type][body...]
-        """
         if not (0 <= msg_type <= 255):
             raise ValueError("msg_type must be 0..255")
         if len(body) > 0xFFFFFFFF - 1:
@@ -186,11 +150,6 @@ class Neighbor:
             self.sock.sendall(b)
 
     def _handle_bitfield_like(self, msg_type: int, body: bytes) -> None:
-        """
-        For msg_type 4 or 5 with body size 4:
-          - store bitfield
-          - check interest; if True, send Interested
-        """
         if len(body) != 4:
             return
 

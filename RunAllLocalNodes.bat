@@ -1,26 +1,16 @@
 @echo off
 setlocal EnableExtensions EnableDelayedExpansion
 
-REM ============================================================
-REM RunAllNodes.bat
-REM - Activates venv at .\venv\Scripts\activate
-REM - Reads PeerInfo.txt lines:  id ip port hasFile
-REM - Starts one process per line running Node.py
-REM - Passes: --ip --port --id --peerinfo PeerInfo.txt --commonconfig Common.txt
-REM - Waits 0.5 seconds between each launch
-REM ============================================================
-
-REM ---- Move to this .bat's directory so relative paths work ----
 cd /d "%~dp0"
 
-REM ---- Activate venv ----
+REM Activate venv
 if not exist ".\venv\Scripts\activate.bat" (
   echo [ERROR] Could not find .\venv\Scripts\activate.bat
   exit /b 1
 )
 call ".\venv\Scripts\activate.bat"
 
-REM ---- Validate files ----
+REM Validate files
 if not exist ".\PeerInfo.txt" (
   echo [ERROR] Could not find PeerInfo.txt in %cd%
   exit /b 1
@@ -39,10 +29,7 @@ if not exist ".\Node.py" (
 echo Launching nodes from PeerInfo.txt...
 echo.
 
-REM ---- Parse PeerInfo.txt and launch each node ----
-REM Expected format per non-comment line:
-REM   <id> <ip> <port> <hasFile>
-REM Ignores blank lines and lines starting with '#'
+REM Parse PeerInfo.txt and launch each node
 for /f "usebackq tokens=1,2,3,4 delims= " %%A in (".\PeerInfo.txt") do (
   set "FIRST=%%A"
   if not "!FIRST!"=="" (
