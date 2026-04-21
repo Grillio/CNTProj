@@ -21,8 +21,8 @@ if not exist ".\Common.txt" (
   exit /b 1
 )
 
-if not exist ".\Node.py" (
-  echo [ERROR] Could not find Node.py in %cd%
+if not exist ".\peerProcess.py" (
+  echo [ERROR] Could not find peerProcess.py in %cd%
   exit /b 1
 )
 
@@ -40,7 +40,7 @@ for /f "usebackq tokens=1,2,3,4 delims= " %%A in (".\PeerInfo.txt") do (
       set "HASFILE=%%D"
 
       echo [START] id=!ID! ip=!IP! port=!PORT! hasFile=!HASFILE!
-      start "Node_!ID!" /D "%cd%" cmd /k python ".\Node.py" --ip "!IP!" --port "!PORT!" --id "!ID!" --peerinfo ".\PeerInfo.txt" --commonconfig ".\Common.txt"
+      start "Node_!ID!" /D "%cd%" cmd /k python ".\peerProcess.py" "!ID!"
 
       echo Waiting 0.5 seconds...
       timeout /t 1 /nobreak >nul

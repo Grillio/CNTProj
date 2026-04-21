@@ -6,7 +6,7 @@ import threading
 from typing import Optional, Tuple, TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from Node import Node
+    from peerProcess import Node
 
 
 HANDSHAKE_HEADER = b"P2PFILESHARINGPROJ"

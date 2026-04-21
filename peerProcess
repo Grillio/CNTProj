@@ -24,7 +24,7 @@ def main() -> None:
 
     root = Path.cwd()
     sys.path.insert(0, str(Path(__file__).resolve().parent))
-    from Node import load_peerinfo, run_node
+    from peerProcess import load_peerinfo, run_node
 
     common_path = _first_existing(root, ("Common.cfg", "Common.txt"))
     peerinfo_path = _first_existing(root, ("PeerInfo.cfg", "PeerInfo.txt"))
@@ -35,8 +35,6 @@ def main() -> None:
 
     run_node(
         my_id=my_id,
-        listen_ip=my_entry.ip,
-        listen_port=my_entry.port,
         peerinfo_path=str(peerinfo_path.resolve()),
         common_path=str(common_path.resolve()),
     )

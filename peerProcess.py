@@ -1,10 +1,10 @@
 from __future__ import annotations
 
-import argparse
 import datetime
 import random
 import socket
 import struct
+import sys
 import threading
 import time
 from dataclasses import dataclass
@@ -738,8 +738,6 @@ class Node:
 
 def run_node(
     my_id: int,
-    listen_ip: str,
-    listen_port: int,
     peerinfo_path: str,
     common_path: str,
 ) -> None:
@@ -748,15 +746,10 @@ def run_node(
     my_entry: Optional[PeerEntry] = next((e for e in all_entries if e.pid == my_id), None)
     if my_entry is None:
         raise SystemExit(f"Process id {my_id} not found in peerinfo file")
-    if my_entry.ip != listen_ip or my_entry.port != listen_port:
-        print(
-            f"[warn] PeerInfo lists this node as {my_entry.ip}:{my_entry.port}, "
-            f"but args are {listen_ip}:{listen_port}"
-        )
     node = Node(
         my_id=my_id,
-        listen_ip=listen_ip,
-        listen_port=listen_port,
+        listen_ip=my_entry.ip,
+        listen_port=my_entry.port,
         all_peers=all_entries,
         peerinfo_path=peerinfo_path,
         common=common,
@@ -773,20 +766,30 @@ def run_node(
         print(f"[Node {my_id}] Stopped.")
 
 
+def _first_existing(base: Path, names: tuple[str, ...]) -> Path:
+    for name in names:
+        candidate = base / name
+        if candidate.is_file():
+            return candidate
+    tried = ", ".join(str(base / name) for name in names)
+    raise SystemExit(f"Missing config file in {base} (tried: {tried})")
+
+
 def main() -> None:
-    ap = argparse.ArgumentParser(description="Node process")
-    ap.add_argument("--ip", required=True, help="IP to listen on")
-    ap.add_argument("--port", required=True, type=int, help="Port to listen on")
-    ap.add_argument("--id", required=True, type=int, help="This process id (uint32)")
-    ap.add_argument("--peerinfo", required=True, help="Path to PeerInfo.txt")
-    ap.add_argument("--commonconfig", required=True, help="Path to Common.txt")
-    args = ap.parse_args()
+    if len(sys.argv) != 2:
+        raise SystemExit("usage: peerProcess.py <peerID>")
+    try:
+        my_id = int(sys.argv[1])
+    except ValueError:
+        raise SystemExit("usage: peerProcess.py <peerID> (peerID must be an integer)")
+
+    config_dir = Path(__file__).resolve().parent
+    peerinfo_path = _first_existing(config_dir, ("PeerInfo.txt", "peerinfo.txt"))
+    common_path = _first_existing(config_dir, ("Common.txt", "common.txt"))
     run_node(
-        my_id=args.id,
-        listen_ip=args.ip,
-        listen_port=args.port,
-        peerinfo_path=args.peerinfo,
-        common_path=args.commonconfig,
+        my_id=my_id,
+        peerinfo_path=str(peerinfo_path),
+        common_path=str(common_path),
     )
 
 

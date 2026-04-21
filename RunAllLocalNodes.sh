@@ -18,14 +18,11 @@ if [[ -z "$COMMON" ]]; then
   exit 1
 fi
 
-if [[ ! -f "./peerProcess" ]]; then
-  echo "[ERROR] Could not find ./peerProcess in $(pwd)"
+if [[ ! -f "./peerProcess.py" ]]; then
+  echo "[ERROR] Could not find ./peerProcess.py in $(pwd)"
   exit 1
 fi
-LAUNCHER=("./peerProcess")
-if [[ ! -x "./peerProcess" ]]; then
-  LAUNCHER=(python3 "./peerProcess")
-fi
+LAUNCHER=(python3 "./peerProcess.py")
 
 echo "Launching nodes from $PEERINFO (common: $COMMON)..."
 echo
@@ -40,4 +37,4 @@ while read -r ID IP PORT HASFILE; do
 done < "$PEERINFO"
 
 echo "All processes started."
-echo "Stop all with: pkill -f \"peerProcess\""
+echo "Stop all with: pkill -f \"peerProcess.py\""

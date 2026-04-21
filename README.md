@@ -1,14 +1,14 @@
 ﻿# P2P Project README
 
 ## What To Run
-Run `Node.py` for this project.
+Run `peerProcess.py` for this project.
 
-`Node.py` is the main program entrypoint and is what each peer process should execute.
+`peerProcess.py` is the main program entrypoint and is what each peer process should execute.
 
 ## Script Roles
-- `Node.py`: main peer node implementation (uses both config files).
-- `Neighbor.py`: defines the `Neighbor` class used by `Node.py` to manage per-neighbor connection/state.
-- `ServerClient.py`: separate standalone networking script (simpler/older); `Node.py` does **not** import or call it.
+- `peerProcess.py`: main peer node implementation (uses both config files).
+- `Neighbor.py`: defines the `Neighbor` class used by `peerProcess.py` to manage per-neighbor connection/state.
+- `ServerClient.py`: separate standalone networking script (simpler/older); `peerProcess.py` does **not** import or call it.
 
 ## Requirements
 - Python 3.14+
@@ -22,7 +22,7 @@ This project uses two config files in the project root:
 ## Run (Main Project Flow)
 Example for one peer:
 ```powershell
-python .\Node.py --ip 127.0.0.1 --port 6001 --id 1001 --peerinfo .\PeerInfo.txt --commonconfig .\Common.txt
+python .\peerProcess.py 1001
 ```
 
 Start all peers from `PeerInfo.txt` (Windows):
