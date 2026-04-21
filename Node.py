@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import argparse
+import datetime
 import random
 import socket
+import struct
 import threading
 import time
 from dataclasses import dataclass
@@ -10,27 +12,32 @@ from enum import Enum
 from pathlib import Path
 from typing import Dict, List, Optional, Set, Tuple
 
-from Neighbor import Neighbor
+from Neighbor import (
+    MSG_BITFIELD,
+    MSG_CHOKE,
+    MSG_HAVE,
+    MSG_INTERESTED,
+    MSG_NOT_INTERESTED,
+    MSG_PIECE,
+    MSG_REQUEST,
+    MSG_UNCHOKE,
+    Neighbor,
+)
 
-
-#Config structs + parsing
 
 @dataclass(frozen=True)
 class PeerEntry:
     pid: int
     ip: str
     port: int
-    has_file: bool  #0/1 in PeerInfo.txt
+    has_file: bool
 
 
 @dataclass(frozen=True)
 class CommonConfig:
-    #peer-selection config
     number_of_preferred_neighbors: int
     unchoking_interval: int
     optimistic_unchoking_interval: int
-
-    #file config
     file_name: str
     file_size: int
     piece_size: int
@@ -40,7 +47,6 @@ def load_peerinfo(path: str) -> List[PeerEntry]:
     p = Path(path)
     if not p.exists():
         raise FileNotFoundError(f"peerinfo file not found: {path}")
-
     entries: List[PeerEntry] = []
     for raw in p.read_text(encoding="utf-8").splitlines():
         line = raw.strip()
@@ -63,7 +69,6 @@ def load_common_config(path: str) -> CommonConfig:
     p = Path(path)
     if not p.exists():
         raise FileNotFoundError(f"common config file not found: {path}")
-
     kv: Dict[str, str] = {}
     for raw in p.read_text(encoding="utf-8").splitlines():
         line = raw.strip()
@@ -74,32 +79,29 @@ def load_common_config(path: str) -> CommonConfig:
             continue
         k, v = parts[0].strip(), parts[1].strip()
         kv[k] = v
-
     required = [
         "NumberOfPreferredNeighbors",
         "UnchokingInterval",
         "OptimisticUnchokingInterval",
+        "FileName",
         "FileSize",
         "PieceSize",
     ]
     missing = [k for k in required if k not in kv]
     if missing:
         raise ValueError(f"Common config missing fields: {missing}")
-
     num_pref = int(kv["NumberOfPreferredNeighbors"])
     unchoke = int(kv["UnchokingInterval"])
     opt_unchoke = int(kv["OptimisticUnchokingInterval"])
     file_size = int(kv["FileSize"])
     piece_size = int(kv["PieceSize"])
-    file_name = kv.get("FileName", "").strip()
-
+    file_name = kv["FileName"].strip()
     if num_pref < 0:
         raise ValueError("NumberOfPreferredNeighbors must be >= 0")
     if unchoke <= 0 or opt_unchoke <= 0:
         raise ValueError("UnchokingInterval and OptimisticUnchokingInterval must be > 0")
     if file_size < 0 or piece_size <= 0:
         raise ValueError("Invalid FileSize/PieceSize values")
-
     return CommonConfig(
         number_of_preferred_neighbors=num_pref,
         unchoking_interval=unchoke,
@@ -110,14 +112,10 @@ def load_common_config(path: str) -> CommonConfig:
     )
 
 
-#Choke state (local tracking)
-
 class ChokeState(str, Enum):
     CHOKED = "choked"
     UNCHOKED = "unchoked"
 
-
-#Node
 
 class Node:
     def __init__(
@@ -137,7 +135,6 @@ class Node:
         self.all_peers = all_peers
         self.peerinfo_path = peerinfo_path
 
-        #Common config
         self.common = common
         self.NumberOfPreferredNeighbors = common.number_of_preferred_neighbors
         self.UnchokingInterval = common.unchoking_interval
@@ -146,54 +143,55 @@ class Node:
         self.PieceSize = common.piece_size
         self.FileName = common.file_name
 
-        #Determine whether this node starts with the file (from PeerInfo.txt)
         me = next((p for p in all_peers if p.pid == my_id), None)
         if me is None:
             raise ValueError(f"my_id {my_id} not found in peer list")
         self.has_file_initially = me.has_file
 
-        #neighbors dict indexed by peer process id -> tcp socket
         self.neighbors: Dict[int, socket.socket] = {}
-
-        #Neighbor objects (for downloadsize/interested/reset_preferences)
         self._neighbor_objs: Dict[int, Neighbor] = {}
         self._neighbors_lock = threading.Lock()
 
-        #Local choke state per peer_id
         self.choke_state: Dict[int, ChokeState] = {}
+        self.am_choked_by: Set[int] = set()
+        self._interest_sent: Dict[int, Optional[bool]] = {}
 
         self._server_sock: Optional[socket.socket] = None
         self._stop_evt = threading.Event()
+        self._terminated = False
 
         self.connect_timeout_s = connect_timeout_s
         self.retry_interval_s = retry_interval_s
-
-        #Start gate
         self._started = False
 
-        #All peer IDs except self (required connections)
         self.required_peer_ids: Set[int] = {p.pid for p in self.all_peers if p.pid != self.my_id}
-
-        #Map pid -> PeerEntry for dialing
         self._peer_by_id: Dict[int, PeerEntry] = {p.pid: p for p in self.all_peers}
 
-        #PiecesIHave bitfield (4 bytes)
-        self.PiecesIHave: bytes = b"\xFF\xFF\xFF\xFF" if self.has_file_initially else b"\x00\x00\x00\x00"
+        self.num_pieces = (self.FileSize + self.PieceSize - 1) // self.PieceSize if self.PieceSize > 0 else 0
+        self.bitfield_len = (self.num_pieces + 7) // 8 if self.num_pieces > 0 else 0
+        self.PiecesIHave = bytearray(self.bitfield_len)
+        self._pieces: Dict[int, bytes] = {}
+        self._pieces_lock = threading.Lock()
+        self.pending_requests: Set[int] = set()
+        self.requested_from: Dict[int, int] = {}
 
-        # If hasFile==1: load the file into memory
-        self.file_bytes: Optional[bytes] = None
-        if self.has_file_initially:
-            self._load_file_into_memory()
-
-        #Neighbor selection state
-        self.preferredneighbors: List[int] = []          # peer_ids
-        self.optimisticneighbor: Optional[int] = None    # peer_id
-
-        #Timer threads start only after Start()
+        self.preferredneighbors: List[int] = []
+        self.optimisticneighbor: Optional[int] = None
         self._preferred_clock_thread: Optional[threading.Thread] = None
         self._optimistic_clock_thread: Optional[threading.Thread] = None
 
-    #Lifecycle
+        self.peer_dir = Path(f"peer_{self.my_id}")
+        self.peer_dir.mkdir(parents=True, exist_ok=True)
+        self.log_path = Path(f"log_peer_{self.my_id}.log")
+        self.log_path.write_text("", encoding="utf-8")
+        self.peer_completion: Dict[int, bool] = {p.pid: p.has_file for p in self.all_peers}
+        self._completion_logged = self.has_file_initially
+
+        if self.has_file_initially:
+            self._load_initial_file()
+            self.peer_completion[self.my_id] = True
+        else:
+            self.peer_completion[self.my_id] = False
 
     def start(self) -> None:
         self._start_server()
@@ -202,38 +200,31 @@ class Node:
 
     def stop(self) -> None:
         self._stop_evt.set()
-
         if self._server_sock:
             try:
                 self._server_sock.close()
             except Exception:
                 pass
-
         with self._neighbors_lock:
             objs = list(self._neighbor_objs.values())
-
         for n in objs:
             n.close()
 
-    #File handling
-
-    def _load_file_into_memory(self) -> None:
+    def _load_initial_file(self) -> None:
         if not self.FileName:
             raise FileNotFoundError("FileName is empty in common config, but this node has hasFile=1")
-
-        fp = Path(self.FileName)
+        fp = self.peer_dir / self.FileName
+        if not fp.exists():
+            fp = Path(self.FileName)
         if not fp.exists():
             raise FileNotFoundError(f"FileName '{self.FileName}' not found on disk for hasFile=1")
-
         data = fp.read_bytes()
-
-        if self.FileSize != len(data):
-            print(f"[warn] FileSize={self.FileSize} but actual '{self.FileName}' size={len(data)} bytes")
-
-        self.file_bytes = data
-        print(f"[Node {self.my_id}] Loaded file into memory: '{self.FileName}' ({len(data)} bytes)")
-
-    #Server
+        with self._pieces_lock:
+            for i in range(self.num_pieces):
+                start = i * self.PieceSize
+                end = min(start + self.PieceSize, len(data))
+                self._pieces[i] = data[start:end]
+                self._set_piece_bit(i)
 
     def _start_server(self) -> None:
         s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -241,16 +232,8 @@ class Node:
         s.bind((self.listen_ip, self.listen_port))
         s.listen()
         self._server_sock = s
-
         threading.Thread(target=self._accept_loop, name="AcceptLoop", daemon=True).start()
         print(f"[Node {self.my_id}] Listening on {self.listen_ip}:{self.listen_port}")
-        print(f"[Node {self.my_id}] PiecesIHave={self.PiecesIHave.hex()} (4 bytes)")
-        print(
-            f"[Node {self.my_id}] "
-            f"K={self.NumberOfPreferredNeighbors} "
-            f"Unchoke={self.UnchokingInterval}s OptUnchoke={self.OptimisticUnchokingInterval}s "
-            f"FileSize={self.FileSize} PieceSize={self.PieceSize} hasFile={int(self.has_file_initially)}"
-        )
 
     def _accept_loop(self) -> None:
         assert self._server_sock is not None
@@ -262,7 +245,6 @@ class Node:
             except Exception as e:
                 print(f"[Node {self.my_id}] Accept error: {e}")
                 continue
-
             threading.Thread(target=self._handle_inbound, args=(conn, addr), daemon=True).start()
 
     def _handle_inbound(self, conn: socket.socket, addr: Tuple[str, int]) -> None:
@@ -270,18 +252,16 @@ class Node:
         try:
             peer_id = neighbor.do_handshake()
             self._register_neighbor(peer_id, neighbor)
-            print(f"[Node {self.my_id}] Inbound connected peer_id={peer_id} from {addr}")
+            self._log(f"Peer {self.my_id} is connected from Peer {peer_id}.")
+            self._send_initial_bitfield(neighbor)
             neighbor.start()
         except Exception as e:
             print(f"[Node {self.my_id}] Inbound handshake failed from {addr}: {e}")
             neighbor.close()
 
-    #Dialing logic
-
     def _dial_missing_peers_forever(self) -> None:
         for pid in self.required_peer_ids:
             threading.Thread(target=self._dial_peer_until_connected, args=(pid,), daemon=True).start()
-
         while not self._stop_evt.is_set():
             time.sleep(0.5)
 
@@ -289,32 +269,27 @@ class Node:
         peer = self._peer_by_id.get(peer_id)
         if peer is None:
             return
-
         while not self._stop_evt.is_set():
             with self._neighbors_lock:
                 if peer_id in self.neighbors:
                     return
-
             sock: Optional[socket.socket] = None
             try:
                 sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
                 sock.settimeout(self.connect_timeout_s)
                 sock.connect((peer.ip, peer.port))
                 sock.settimeout(None)
-
                 neighbor = Neighbor(self, sock, (peer.ip, peer.port), outbound=True)
                 peer_id_from_hs = neighbor.do_handshake()
-
                 if peer_id_from_hs != peer_id:
                     raise ConnectionError(
                         f"Connected to {peer.ip}:{peer.port} but handshake id={peer_id_from_hs}, expected {peer_id}"
                     )
-
                 self._register_neighbor(peer_id, neighbor)
-                print(f"[Node {self.my_id}] Outbound connected peer_id={peer_id} to {peer.ip}:{peer.port}")
+                self._log(f"Peer {self.my_id} makes a connection to Peer {peer_id}.")
+                self._send_initial_bitfield(neighbor)
                 neighbor.start()
                 return
-
             except Exception:
                 if sock is not None:
                     try:
@@ -322,8 +297,6 @@ class Node:
                     except Exception:
                         pass
                 time.sleep(self.retry_interval_s)
-
-    #Start gate
 
     def _all_required_connected(self) -> bool:
         with self._neighbors_lock:
@@ -333,7 +306,6 @@ class Node:
         if not self.required_peer_ids:
             self._trigger_start_once()
             return
-
         while not self._stop_evt.is_set():
             if self._all_required_connected():
                 self._trigger_start_once()
@@ -345,15 +317,8 @@ class Node:
             if self._started:
                 return
             self._started = True
-
-        print("all connections have been successfully established")
-
-        #On start: choose random optimistic + preferred (initial state)
         self._initialize_random_unchokes()
-
         self.Start()
-
-        #Start interval logic only after process begins
         self._preferred_clock_thread = threading.Thread(
             target=self._preferred_interval_loop, name="PreferredIntervalLoop", daemon=True
         )
@@ -364,67 +329,51 @@ class Node:
         self._optimistic_clock_thread.start()
 
     def Start(self) -> None:
-        print("Start triggered")
-
-    #Neighbor registration
+        return
 
     def _register_neighbor(self, peer_id: int, neighbor: Neighbor) -> None:
         if peer_id == self.my_id:
             neighbor.close()
             return
-
         with self._neighbors_lock:
             if peer_id in self.neighbors:
                 neighbor.close()
                 return
-
             self.neighbors[peer_id] = neighbor.sock
             self._neighbor_objs[peer_id] = neighbor
-            self.choke_state[peer_id] = ChokeState.CHOKED  #default choked until selected
-
-    #Selection logic
-
-    #Interest / Request helpers (new)
+            self.choke_state[peer_id] = ChokeState.CHOKED
+            self._interest_sent[peer_id] = None
+            self.am_choked_by.add(peer_id)
 
     def request(self, peer_id: int) -> None:
-        _ = peer_id
-        return
-
-    def checkifinterested(self, their_bitfield: bytes) -> bool:
-        if not isinstance(their_bitfield, (bytes, bytearray)) or len(their_bitfield) != 4:
-            return False
-        if not isinstance(self.PiecesIHave, (bytes, bytearray)) or len(self.PiecesIHave) != 4:
-            return False
-
-        my_bits = int.from_bytes(self.PiecesIHave, byteorder="big", signed=False)
-        their_bits = int.from_bytes(their_bitfield, byteorder="big", signed=False)
-
-        missing_mask = (~my_bits) & 0xFFFFFFFF
-        return (their_bits & missing_mask) != 0
-
-
-    def _initialize_random_unchokes(self) -> None:
         with self._neighbors_lock:
-            ids = list(self._neighbor_objs.keys())
-
-        if not ids:
-            self.preferredneighbors = []
-            self.optimisticneighbor = None
+            neighbor = self._neighbor_objs.get(peer_id)
+        if neighbor is None:
+            return
+        if peer_id in self.am_choked_by:
+            return
+        idx = self._choose_request_index(peer_id)
+        if idx < 0:
+            return
+        try:
+            neighbor.send_request(idx)
+            with self._pieces_lock:
+                self.pending_requests.add(idx)
+                self.requested_from[idx] = peer_id
+        except Exception:
             return
 
-        random.shuffle(ids)
+    def checkifinterested(self, their_bitfield: bytes) -> bool:
+        if not isinstance(their_bitfield, (bytes, bytearray)) or len(their_bitfield) != self.bitfield_len:
+            return False
+        for idx in range(self.num_pieces):
+            if self._bit_is_set(their_bitfield, idx) and not self._has_piece_bit(idx):
+                return True
+        return False
 
-        #optimistic: any one random
-        self.optimisticneighbor = ids[0]
-
-        #preferred: random K excluding optimistic
-        remaining = [pid for pid in ids if pid != self.optimisticneighbor]
-        k = max(0, self.NumberOfPreferredNeighbors)
-        self.preferredneighbors = remaining[:k] if k > 0 else []
-
-        self._apply_choke_states()
-
-        print(f"[Node {self.my_id}] Initial preferred={self.preferredneighbors} optimistic={self.optimisticneighbor}")
+    def _initialize_random_unchokes(self) -> None:
+        self._recompute_preferred_neighbors()
+        self._recompute_optimistic_neighbor()
 
     def _preferred_interval_loop(self) -> None:
         while not self._stop_evt.is_set():
@@ -442,113 +391,199 @@ class Node:
 
     def _recompute_preferred_neighbors(self) -> None:
         k = max(0, self.NumberOfPreferredNeighbors)
-        if k == 0:
-            self.preferredneighbors = []
-            self._apply_choke_states()
-            self._reset_preference_stats_all()
-            print(f"[Node {self.my_id}] Preferred update: K=0 -> preferred=[]")
-            return
-
         with self._neighbors_lock:
             candidates: List[Tuple[int, int]] = []
             for pid, n in self._neighbor_objs.items():
                 if bool(getattr(n, "interested", False)):
                     candidates.append((pid, int(getattr(n, "downloadsize", 0))))
-
-        if not candidates:
+        if k == 0 or not candidates:
             self.preferredneighbors = []
             self._apply_choke_states()
             self._reset_preference_stats_all()
-            print(f"[Node {self.my_id}] Preferred update: no interested peers -> preferred=[]")
+            self._log(f"Peer {self.my_id} has the preferred neighbors .")
             return
-
-        #Sort by downloadsize desc
-        candidates.sort(key=lambda t: t[1], reverse=True)
-
-        chosen: List[int] = []
-        i = 0
-        while i < len(candidates) and len(chosen) < k:
-            #collect tie group at this score
-            score = candidates[i][1]
-            tie_group: List[int] = []
-            while i < len(candidates) and candidates[i][1] == score:
-                tie_group.append(candidates[i][0])
-                i += 1
-
-            slots_left = k - len(chosen)
-            if len(tie_group) <= slots_left:
-                chosen.extend(tie_group)
-            else:
-                #tie spillover: choose randomly among tied to fill remaining slots
-                random.shuffle(tie_group)
-                chosen.extend(tie_group[:slots_left])
-
-        #If still not full, fill randomly from remaining interested (shouldn't happen with loop above, but safe)
-        if len(chosen) < k:
-            remaining = [pid for pid, _sz in candidates if pid not in chosen]
-            random.shuffle(remaining)
-            chosen.extend(remaining[: (k - len(chosen))])
-
-        #Exclude optimistic from preferred (standard)
-        if self.optimisticneighbor is not None and self.optimisticneighbor in chosen:
-            chosen = [pid for pid in chosen if pid != self.optimisticneighbor]
+        if self._is_complete_local():
+            ids = [pid for pid, _ in candidates]
+            random.shuffle(ids)
+            chosen = ids[:k]
+        else:
+            candidates.sort(key=lambda t: t[1], reverse=True)
+            chosen: List[int] = []
+            i = 0
+            while i < len(candidates) and len(chosen) < k:
+                score = candidates[i][1]
+                tie_group: List[int] = []
+                while i < len(candidates) and candidates[i][1] == score:
+                    tie_group.append(candidates[i][0])
+                    i += 1
+                slots_left = k - len(chosen)
+                if len(tie_group) <= slots_left:
+                    chosen.extend(tie_group)
+                else:
+                    random.shuffle(tie_group)
+                    chosen.extend(tie_group[:slots_left])
             if len(chosen) < k:
-                pool = [pid for pid, _sz in candidates if pid not in chosen and pid != self.optimisticneighbor]
-                random.shuffle(pool)
-                if pool:
-                    chosen.append(pool[0])
-
+                remaining = [pid for pid, _ in candidates if pid not in chosen]
+                random.shuffle(remaining)
+                chosen.extend(remaining[: (k - len(chosen))])
         self.preferredneighbors = chosen
         self._apply_choke_states()
         self._reset_preference_stats_all()
-
-        print(f"[Node {self.my_id}] Preferred update: preferred={self.preferredneighbors}")
+        pref_list = ",".join(str(pid) for pid in self.preferredneighbors)
+        self._log(f"Peer {self.my_id} has the preferred neighbors {pref_list}.")
 
     def _recompute_optimistic_neighbor(self) -> None:
         with self._neighbors_lock:
-            choked_interested = []
-            fallback = []
+            choked_interested: List[int] = []
             for pid, n in self._neighbor_objs.items():
                 if not bool(getattr(n, "interested", False)):
                     continue
-                if pid in self.preferredneighbors:
-                    continue
-                fallback.append(pid)
-                if self.choke_state.get(pid) == ChokeState.CHOKED:
+                if self.choke_state.get(pid, ChokeState.CHOKED) == ChokeState.CHOKED:
                     choked_interested.append(pid)
-
-        candidates = choked_interested or fallback
-        if not candidates:
+        if not choked_interested:
+            self.optimisticneighbor = None
+            self._apply_choke_states()
             return
-
-        self.optimisticneighbor = random.choice(candidates)
+        chosen = random.choice(choked_interested)
+        if chosen != self.optimisticneighbor:
+            self.optimisticneighbor = chosen
+            self._log(f"Peer {self.my_id} has the optimistically unchoked neighbor {self.optimisticneighbor}.")
         self._apply_choke_states()
-
-        print(f"[Node {self.my_id}] Optimistic update: optimistic={self.optimisticneighbor}")
 
     def _apply_choke_states(self) -> None:
         with self._neighbors_lock:
-            for pid in self._neighbor_objs.keys():
-                if pid in self.preferredneighbors or (self.optimisticneighbor is not None and pid == self.optimisticneighbor):
-                    self.choke_state[pid] = ChokeState.UNCHOKED
+            items = list(self._neighbor_objs.items())
+        for pid, n in items:
+            should_unchoke = pid in self.preferredneighbors or (
+                self.optimisticneighbor is not None and pid == self.optimisticneighbor
+            )
+            desired = ChokeState.UNCHOKED if should_unchoke else ChokeState.CHOKED
+            previous = self.choke_state.get(pid, ChokeState.CHOKED)
+            if previous == desired:
+                continue
+            self.choke_state[pid] = desired
+            try:
+                if desired == ChokeState.UNCHOKED:
+                    n.send_unchoke()
                 else:
-                    self.choke_state[pid] = ChokeState.CHOKED
+                    n.send_choke()
+            except Exception:
+                continue
 
     def _reset_preference_stats_all(self) -> None:
         with self._neighbors_lock:
             for n in self._neighbor_objs.values():
                 n.reset_preferences()
 
-    #Callbacks from Neighbor
-
     def on_packet(self, neighbor: Neighbor, payload: bytes) -> None:
-        #Neighbor sends raw payload as: [type][body...]
         msg_type = payload[0] if payload else None
-        print(f"[Node {self.my_id}] RX from peer_id={neighbor.peer_id} type={msg_type} bytes={len(payload)}")
+        body = payload[1:] if len(payload) > 1 else b""
+        pid = neighbor.peer_id
+        if pid is None or msg_type is None:
+            return
+
+        if msg_type == MSG_CHOKE:
+            self.am_choked_by.add(pid)
+            self._clear_pending_from_peer(pid)
+            self._log(f"Peer {self.my_id} is choked by {pid}.")
+            return
+
+        if msg_type == MSG_UNCHOKE:
+            self.am_choked_by.discard(pid)
+            self._log(f"Peer {self.my_id} is unchoked by {pid}.")
+            self.request(pid)
+            return
+
+        if msg_type == MSG_INTERESTED:
+            neighbor.interested = True
+            self._log(f"Peer {self.my_id} received the 'interested' message from {pid}.")
+            return
+
+        if msg_type == MSG_NOT_INTERESTED:
+            neighbor.interested = False
+            self._log(f"Peer {self.my_id} received the 'not interested' message from {pid}.")
+            return
+
+        if msg_type == MSG_HAVE:
+            if len(body) != 4:
+                return
+            piece_index = struct.unpack("!I", body)[0]
+            if piece_index >= self.num_pieces:
+                return
+            neighbor.bitfield = self._set_bit_in_bitfield_copy(neighbor.bitfield, piece_index)
+            self._log(f"Peer {self.my_id} received the 'have' message from {pid} for the piece {piece_index}.")
+            if self._is_bitfield_complete(neighbor.bitfield):
+                self.peer_completion[pid] = True
+            self._send_interest_state(pid)
+            self._maybe_terminate()
+            return
+
+        if msg_type == MSG_BITFIELD:
+            if len(body) != self.bitfield_len:
+                return
+            neighbor.bitfield = bytes(body)
+            if self._is_bitfield_complete(neighbor.bitfield):
+                self.peer_completion[pid] = True
+            self._send_interest_state(pid)
+            self._maybe_terminate()
+            return
+
+        if msg_type == MSG_REQUEST:
+            if len(body) != 4:
+                return
+            piece_index = struct.unpack("!I", body)[0]
+            if piece_index >= self.num_pieces:
+                return
+            if self.choke_state.get(pid, ChokeState.CHOKED) == ChokeState.CHOKED:
+                return
+            with self._pieces_lock:
+                data = self._pieces.get(piece_index)
+            if data is None:
+                return
+            try:
+                neighbor.send_piece(piece_index, data)
+            except Exception:
+                return
+            return
+
+        if msg_type == MSG_PIECE:
+            if len(body) < 4:
+                return
+            piece_index = struct.unpack("!I", body[:4])[0]
+            piece_data = body[4:]
+            if piece_index >= self.num_pieces:
+                return
+            if pid in self.am_choked_by:
+                return
+            new_piece = False
+            with self._pieces_lock:
+                self.pending_requests.discard(piece_index)
+                self.requested_from.pop(piece_index, None)
+                if piece_index not in self._pieces:
+                    self._pieces[piece_index] = piece_data
+                    self._set_piece_bit(piece_index)
+                    new_piece = True
+            if new_piece:
+                neighbor.downloadsize += len(piece_data)
+                cnt = self._piece_count_local()
+                self._log(
+                    f"Peer {self.my_id} has downloaded the piece {piece_index} from {pid}. "
+                    f"Now the number of pieces it has is {cnt}."
+                )
+                self._broadcast_have(piece_index)
+                if self._is_complete_local():
+                    self.peer_completion[self.my_id] = True
+                    self._write_completed_file()
+                    if not self._completion_logged:
+                        self._log(f"Peer {self.my_id} has downloaded the complete file.")
+                        self._completion_logged = True
+                self._refresh_all_interest_states()
+            self.request(pid)
+            self._maybe_terminate()
+            return
 
     def on_neighbor_disconnected(self, neighbor: Neighbor, exc: Exception) -> None:
         pid = neighbor.peer_id
-        print(f"[Node {self.my_id}] Disconnected peer_id={pid} addr={neighbor.addr} reason={exc}")
         if pid is None:
             return
         with self._neighbors_lock:
@@ -557,15 +592,152 @@ class Node:
                 self.neighbors.pop(pid, None)
                 self._neighbor_objs.pop(pid, None)
                 self.choke_state.pop(pid, None)
-
+                self._interest_sent.pop(pid, None)
+        self._clear_pending_from_peer(pid)
+        self.am_choked_by.discard(pid)
         if self.optimisticneighbor == pid:
             self.optimisticneighbor = None
         if pid in self.preferredneighbors:
             self.preferredneighbors = [x for x in self.preferredneighbors if x != pid]
 
+    def _bit_is_set(self, bitfield: bytes | bytearray, piece_index: int) -> bool:
+        if piece_index < 0 or piece_index >= self.num_pieces:
+            return False
+        byte_idx = piece_index // 8
+        bit_idx = 7 - (piece_index % 8)
+        return (bitfield[byte_idx] & (1 << bit_idx)) != 0
+
+    def _set_piece_bit(self, piece_index: int) -> None:
+        if piece_index < 0 or piece_index >= self.num_pieces:
+            return
+        byte_idx = piece_index // 8
+        bit_idx = 7 - (piece_index % 8)
+        self.PiecesIHave[byte_idx] |= 1 << bit_idx
+
+    def _has_piece_bit(self, piece_index: int) -> bool:
+        return self._bit_is_set(self.PiecesIHave, piece_index)
+
+    def _set_bit_in_bitfield_copy(self, bitfield: bytes, piece_index: int) -> bytes:
+        if len(bitfield) != self.bitfield_len:
+            bitfield = bytes(self.bitfield_len)
+        b = bytearray(bitfield)
+        byte_idx = piece_index // 8
+        bit_idx = 7 - (piece_index % 8)
+        b[byte_idx] |= 1 << bit_idx
+        return bytes(b)
+
+    def _bitfield_bytes(self) -> bytes:
+        return bytes(self.PiecesIHave)
+
+    def _piece_count_local(self) -> int:
+        with self._pieces_lock:
+            return len(self._pieces)
+
+    def _is_complete_local(self) -> bool:
+        return self.num_pieces > 0 and self._piece_count_local() >= self.num_pieces
+
+    def _is_bitfield_complete(self, bitfield: bytes) -> bool:
+        if len(bitfield) != self.bitfield_len:
+            return False
+        for idx in range(self.num_pieces):
+            if not self._bit_is_set(bitfield, idx):
+                return False
+        return True
+
+    def _send_initial_bitfield(self, neighbor: Neighbor) -> None:
+        if self.num_pieces == 0:
+            return
+        if self._piece_count_local() == 0:
+            return
+        try:
+            neighbor.send_bitfield(self._bitfield_bytes())
+        except Exception:
+            return
+
+    def _choose_request_index(self, peer_id: int) -> int:
+        with self._neighbors_lock:
+            neighbor = self._neighbor_objs.get(peer_id)
+        if neighbor is None:
+            return -1
+        with self._pieces_lock:
+            candidates = [
+                idx
+                for idx in range(self.num_pieces)
+                if self._bit_is_set(neighbor.bitfield, idx) and idx not in self._pieces and idx not in self.pending_requests
+            ]
+        if not candidates:
+            return -1
+        return random.choice(candidates)
+
+    def _broadcast_have(self, piece_index: int) -> None:
+        with self._neighbors_lock:
+            neighbors = list(self._neighbor_objs.values())
+        for n in neighbors:
+            try:
+                n.send_have(piece_index)
+            except Exception:
+                continue
+
+    def _send_interest_state(self, peer_id: int) -> None:
+        with self._neighbors_lock:
+            neighbor = self._neighbor_objs.get(peer_id)
+        if neighbor is None:
+            return
+        interested = self.checkifinterested(neighbor.bitfield)
+        prev = self._interest_sent.get(peer_id)
+        if prev is interested:
+            return
+        try:
+            if interested:
+                neighbor.send_interested()
+            else:
+                neighbor.send_not_interested()
+            self._interest_sent[peer_id] = interested
+        except Exception:
+            return
+
+    def _refresh_all_interest_states(self) -> None:
+        with self._neighbors_lock:
+            ids = list(self._neighbor_objs.keys())
+        for pid in ids:
+            self._send_interest_state(pid)
+
+    def _clear_pending_from_peer(self, peer_id: int) -> None:
+        with self._pieces_lock:
+            to_remove = [idx for idx, pid in self.requested_from.items() if pid == peer_id]
+            for idx in to_remove:
+                self.requested_from.pop(idx, None)
+                self.pending_requests.discard(idx)
+
+    def _write_completed_file(self) -> None:
+        out_path = self.peer_dir / self.FileName
+        with self._pieces_lock:
+            data = b"".join(self._pieces[i] for i in range(self.num_pieces))
+        out_path.write_bytes(data[: self.FileSize])
+
+    def _maybe_terminate(self) -> None:
+        if self._terminated:
+            return
+        if self._is_complete_local():
+            self.peer_completion[self.my_id] = True
+        with self._neighbors_lock:
+            for pid, n in self._neighbor_objs.items():
+                if self._is_bitfield_complete(n.bitfield):
+                    self.peer_completion[pid] = True
+        if all(self.peer_completion.get(p.pid, False) for p in self.all_peers):
+            self._terminated = True
+            self.stop()
+
+    def _log(self, message: str) -> None:
+        ts = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        line = f"{ts}: {message}\n"
+        with self.log_path.open("a", encoding="utf-8") as f:
+            f.write(line)
+        print(line.strip())
+
 
 def main() -> None:
-    ap = argparse.ArgumentParser(description="Node process (server+client) waiting for ALL peers except itself.")
+    ap = argparse.ArgumentParser(description="Node process")
     ap.add_argument("--ip", required=True, help="IP to listen on")
     ap.add_argument("--port", required=True, type=int, help="Port to listen on")
     ap.add_argument("--id", required=True, type=int, help="This process id (uint32)")
@@ -575,17 +747,14 @@ def main() -> None:
 
     common = load_common_config(args.commonconfig)
     all_entries = load_peerinfo(args.peerinfo)
-
     my_entry: Optional[PeerEntry] = next((e for e in all_entries if e.pid == args.id), None)
     if my_entry is None:
         raise SystemExit(f"Process id {args.id} not found in peerinfo file")
-
     if my_entry.ip != args.ip or my_entry.port != args.port:
         print(
             f"[warn] PeerInfo lists this node as {my_entry.ip}:{my_entry.port}, "
             f"but args are {args.ip}:{args.port}"
         )
-
     node = Node(
         my_id=args.id,
         listen_ip=args.ip,
@@ -594,12 +763,10 @@ def main() -> None:
         peerinfo_path=args.peerinfo,
         common=common,
     )
-
     node.start()
-
     print(f"[Node {args.id}] Running. Ctrl+C to stop.")
     try:
-        while True:
+        while not node._stop_evt.is_set():
             time.sleep(1.0)
     except KeyboardInterrupt:
         pass
