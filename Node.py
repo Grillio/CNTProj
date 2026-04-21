@@ -736,6 +736,43 @@ class Node:
         print(line.strip())
 
 
+def run_node(
+    my_id: int,
+    listen_ip: str,
+    listen_port: int,
+    peerinfo_path: str,
+    common_path: str,
+) -> None:
+    common = load_common_config(common_path)
+    all_entries = load_peerinfo(peerinfo_path)
+    my_entry: Optional[PeerEntry] = next((e for e in all_entries if e.pid == my_id), None)
+    if my_entry is None:
+        raise SystemExit(f"Process id {my_id} not found in peerinfo file")
+    if my_entry.ip != listen_ip or my_entry.port != listen_port:
+        print(
+            f"[warn] PeerInfo lists this node as {my_entry.ip}:{my_entry.port}, "
+            f"but args are {listen_ip}:{listen_port}"
+        )
+    node = Node(
+        my_id=my_id,
+        listen_ip=listen_ip,
+        listen_port=listen_port,
+        all_peers=all_entries,
+        peerinfo_path=peerinfo_path,
+        common=common,
+    )
+    node.start()
+    print(f"[Node {my_id}] Running. Ctrl+C to stop.")
+    try:
+        while not node._stop_evt.is_set():
+            time.sleep(1.0)
+    except KeyboardInterrupt:
+        pass
+    finally:
+        node.stop()
+        print(f"[Node {my_id}] Stopped.")
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(description="Node process")
     ap.add_argument("--ip", required=True, help="IP to listen on")
@@ -744,35 +781,13 @@ def main() -> None:
     ap.add_argument("--peerinfo", required=True, help="Path to PeerInfo.txt")
     ap.add_argument("--commonconfig", required=True, help="Path to Common.txt")
     args = ap.parse_args()
-
-    common = load_common_config(args.commonconfig)
-    all_entries = load_peerinfo(args.peerinfo)
-    my_entry: Optional[PeerEntry] = next((e for e in all_entries if e.pid == args.id), None)
-    if my_entry is None:
-        raise SystemExit(f"Process id {args.id} not found in peerinfo file")
-    if my_entry.ip != args.ip or my_entry.port != args.port:
-        print(
-            f"[warn] PeerInfo lists this node as {my_entry.ip}:{my_entry.port}, "
-            f"but args are {args.ip}:{args.port}"
-        )
-    node = Node(
+    run_node(
         my_id=args.id,
         listen_ip=args.ip,
         listen_port=args.port,
-        all_peers=all_entries,
         peerinfo_path=args.peerinfo,
-        common=common,
+        common_path=args.commonconfig,
     )
-    node.start()
-    print(f"[Node {args.id}] Running. Ctrl+C to stop.")
-    try:
-        while not node._stop_evt.is_set():
-            time.sleep(1.0)
-    except KeyboardInterrupt:
-        pass
-    finally:
-        node.stop()
-        print(f"[Node {args.id}] Stopped.")
 
 
 if __name__ == "__main__":
