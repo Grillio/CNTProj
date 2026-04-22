@@ -165,7 +165,9 @@ class Node:
         self._started = False
 
         self.required_peer_ids: Set[int] = {p.pid for p in self.all_peers if p.pid != self.my_id}
-        self._peer_by_id: Dict[int, PeerEntry] = {p.pid: p for p in self.all_peers}
+        my_index = next(i for i, p in enumerate(self.all_peers) if p.pid == self.my_id)
+        self.peers_to_dial: Set[int] = {p.pid for p in self.all_peers[:my_index]}
+        self._peer_by_id = {p.pid: p for p in all_peers}
 
         self.num_pieces = (self.FileSize + self.PieceSize - 1) // self.PieceSize if self.PieceSize > 0 else 0
         self.bitfield_len = (self.num_pieces + 7) // 8 if self.num_pieces > 0 else 0
@@ -260,8 +262,12 @@ class Node:
             neighbor.close()
 
     def _dial_missing_peers_forever(self) -> None:
-        for pid in self.required_peer_ids:
-            threading.Thread(target=self._dial_peer_until_connected, args=(pid,), daemon=True).start()
+        for pid in self.peers_to_dial:
+            threading.Thread(
+                target=self._dial_peer_until_connected,
+                args=(pid,),
+                daemon=True,
+            ).start()
         while not self._stop_evt.is_set():
             time.sleep(0.5)
 
@@ -298,16 +304,13 @@ class Node:
                         pass
                 time.sleep(self.retry_interval_s)
 
-    def _all_required_connected(self) -> bool:
+    def _any_connected(self) -> bool:
         with self._neighbors_lock:
-            return self.required_peer_ids.issubset(self.neighbors.keys())
+            return len(self.neighbors) > 0
 
     def _wait_for_all_connections_then_start(self) -> None:
-        if not self.required_peer_ids:
-            self._trigger_start_once()
-            return
         while not self._stop_evt.is_set():
-            if self._all_required_connected():
+            if self._any_connected():
                 self._trigger_start_once()
                 return
             time.sleep(0.05)
@@ -400,7 +403,7 @@ class Node:
             self.preferredneighbors = []
             self._apply_choke_states()
             self._reset_preference_stats_all()
-            self._log(f"Peer {self.my_id} has the preferred neighbors .")
+            self._log(f"Peer {self.my_id} has the preferred neighbors.")
             return
         if self._is_complete_local():
             ids = [pid for pid, _ in candidates]
@@ -784,8 +787,8 @@ def main() -> None:
         raise SystemExit("usage: peerProcess.py <peerID> (peerID must be an integer)")
 
     config_dir = Path(__file__).resolve().parent
-    peerinfo_path = _first_existing(config_dir, ("PeerInfo.txt", "peerinfo.txt"))
-    common_path = _first_existing(config_dir, ("Common.txt", "common.txt"))
+    peerinfo_path = _first_existing(config_dir, ("PeerInfo.cfg", "PeerInfo.txt", "peerinfo.txt"))
+    common_path = _first_existing(config_dir, ("Common.cfg", "Common.txt", "common.txt"))
     run_node(
         my_id=my_id,
         peerinfo_path=str(peerinfo_path),
